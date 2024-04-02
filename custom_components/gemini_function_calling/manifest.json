@@ -1,8 +1,8 @@
 {
   "domain": "google_gemini_function_calling",
   "name": "Gemini Function Calling",
-  "version": "1.0.0",
-  "codeowners": ["@tronikos"],
+  "version": "0.0.1",
+  "codeowners": ["@koverholt"],
   "config_flow": true,
   "dependencies": ["conversation"],
   "documentation": "https://www.home-assistant.io/integrations/google_generative_ai_conversation",
