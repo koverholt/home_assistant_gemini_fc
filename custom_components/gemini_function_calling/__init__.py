@@ -157,41 +157,61 @@ class GoogleGenerativeAIAgent(conversation.AbstractConversationAgent):
         """Return a list of supported languages."""
         return MATCH_ALL
 
-
     async def async_process(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
         """Process a sentence."""
 
-        control_device = glm.Tool(
+        control_light = glm.Tool(
             function_declarations=[
             glm.FunctionDeclaration(
-                name="control_device",
+                name="control_light",
                 description="""
-                    Use this function to control any smart home device within Home Assistant.
-                    Can turn on and off devices.
+                    Turn a light on or off.
 
                     Args:
-                        domain: The domain of the service to call. (Required)
-                        service: The service to call. (Required)
-                        entity_id: The domain and entity ID of the device to control, joined by a period. (Required)
+                        command: Whether to "turn_on" or "turn_off" the light.
 
-                    The entity_id should include the domain and entity of the device joined by a period, as in "input_boolean.fluxor".
+                    Example input: Light on
+                    Example output: {"command": "turn_on"}
 
-                    You can use domain="homeassistant" and service="turn_off" as a generic turn off.
-                    You can use domain="homeassistant" and service="turn_on" as a generic turn on.
-
-                    Example input: Turn off the Flux Capacitor.
-                    Example output: {"domain": "homeassistant", "service": "turn_on", {"entity_id"}: "input_boolean_flux_capacitor"}
+                    Example input: Light off
+                    Example output: {"command": "turn_off"}
                 """,
                 parameters=glm.Schema(
                     type=glm.Type.OBJECT,
                     properties={
-                        "domain":glm.Schema(type=glm.Type.STRING),
-                        "service":glm.Schema(type=glm.Type.STRING),
-                        "entity_id":glm.Schema(type=glm.Type.STRING),
+                        "command":glm.Schema(type=glm.Type.STRING),
                     },
-                    required=["domain", "service", "entity_id"]
+                    required=["command"]
+                )
+            )
+            ])
+
+        set_heating_and_cooling = glm.Tool(
+            function_declarations=[
+            glm.FunctionDeclaration(
+                name="set_heating_and_cooling",
+                description="""
+                    Set the heat and cooling temperatures of the thermostat.
+
+                    Args:
+                        cool_temp: The cool temperature to set to in °F. Must be set to the heat temp plus 3.
+                        heat_temp: The heat temperature to set to in °F. Must be set to the cool temp minus 3.
+
+                    Example input: Set the heat to 74 degrees.
+                    Example output: {"cool_temp": 77, "heat_temp": 74}
+
+                    Example input: Set the cooling to 73 degrees.
+                    Example output: {"cool_temp": 73, "heat_temp": 69}
+                """,
+                parameters=glm.Schema(
+                    type=glm.Type.OBJECT,
+                    properties={
+                        "cool_temp":glm.Schema(type=glm.Type.INTEGER),
+                        "heat_temp":glm.Schema(type=glm.Type.INTEGER),
+                    },
+                    required=["cool_temp", "heat_temp"]
                 )
             )
             ])
@@ -199,7 +219,10 @@ class GoogleGenerativeAIAgent(conversation.AbstractConversationAgent):
         raw_prompt = self.entry.options.get(CONF_PROMPT, DEFAULT_PROMPT)
         model = genai.GenerativeModel(
             model_name=self.entry.options.get(CONF_CHAT_MODEL, DEFAULT_CHAT_MODEL),
-            tools=[control_device],
+            tools=[
+                control_light,
+                set_heating_and_cooling,
+                ],
             generation_config={
                 "temperature": self.entry.options.get(
                     CONF_TEMPERATURE, DEFAULT_TEMPERATURE
@@ -261,22 +284,37 @@ class GoogleGenerativeAIAgent(conversation.AbstractConversationAgent):
         self.history[conversation_id] = chat.history
 
         fc = chat_response.candidates[0].content.parts[0].function_call
+        _LOGGER.debug("Function Call: %s", fc)
 
-        _LOGGER.debug(f"Running with {fc.args["domain"]}, {fc.args["service"]}, and {fc.args["entity_id"]}")
-        self.hass.bus.fire("hello_world_event", {"wow": [fc.args["domain"], fc.args["service"], fc.args["entity_id"]]})
-        await self.hass.services.async_call(
-            fc.args["domain"],
-            fc.args["service"],
-            {"entity_id": fc.args["entity_id"]},
-            False,
-        )
+        if fc.name == "control_light":
+            _LOGGER.debug(f"Setting light to {fc.args["command"]}")
+            await self.hass.services.async_call(
+                "homeassistant",
+                fc.args["command"],
+                {"entity_id": "light.1234567890"},
+                False,
+            )
+
+        if fc.name == "set_heating_and_cooling":
+            _LOGGER.debug(f"Setting thermostat to {fc.args["heat_temp"]} °F and {fc.args["cool_temp"]} °F")
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {
+                    "target_temp_low": fc.args["heat_temp"],
+                    "target_temp_high": fc.args["cool_temp"],
+                    "entity_id": "climate.thermostat",
+
+                },
+                False,
+            )
 
         chat_response = await chat.send_message_async(
             glm.Content(
             parts=[glm.Part(
                 function_response = glm.FunctionResponse(
-                name='control_device',
-                response={'result': f"Requested {fc.args["domain"]}, {fc.args["service"]}, and {fc.args["entity_id"]}. Command ran successfully!"}))]))
+                name=fc.name,
+                response={'result': f"Running {fc.name} with {fc.args}. Command ran successfully!"}))]))
 
         for content in chat.history:
             part = content.parts[0]
